@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>Reference Capture | Liveness Demo</title>
+    <script src="face-api.min.js"></script>
+    <style>
+        :root {
+            color-scheme: dark;
+            --bg: #07111f;
+            --panel: #101d31;
+            --muted: #9fb0c8;
+            --accent: #55d6be;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+            background: radial-gradient(circle at top, #17304d, var(--bg) 60%);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            margin: 0;
+            color: #f5f8fc;
+        }
+
+        .card {
+            width: min(94vw, 760px);
+            padding: clamp(20px, 4vw, 36px);
+            border: 1px solid rgba(159, 176, 200, .2);
+            border-radius: 24px;
+            background: rgba(16, 29, 49, .94);
+            box-shadow: 0 24px 70px rgba(0, 0, 0, .35);
+            text-align: center;
+        }
+
+        h1 {
+            font-size: clamp(24px, 4vw, 34px);
+            margin: 0 0 8px;
+        }
+
+        .subtitle, #status {
+            color: var(--muted);
+        }
+
+        .subtitle {
+            margin: 0 0 20px;
+        }
+
+        .privacy-note {
+            margin: 0 auto 20px;
+            max-width: 600px;
+            padding: 12px 14px;
+            border: 1px solid rgba(85, 214, 190, .35);
+            border-radius: 10px;
+            color: #c8f7ed;
+            background: rgba(85, 214, 190, .08);
+            font-size: 14px;
+            line-height: 1.5;
+        }
+
+        #video {
+            width: 100%;
+            max-width: 640px;
+            aspect-ratio: 4 / 3;
+            object-fit: cover;
+            border: 2px solid rgba(85, 214, 190, .55);
+            border-radius: 18px;
+            background: #02060c;
+            box-shadow: 0 12px 35px rgba(0, 0, 0, .35);
+        }
+
+        button {
+            padding: 12px 20px;
+            margin: 16px 4px 0;
+            font-size: 16px;
+            border: none;
+            border-radius: 10px;
+            cursor: pointer;
+            font-weight: 700;
+            transition: transform .2s, filter .2s;
+        }
+
+        #captureBtn {
+            background: var(--accent);
+            color: #06201c;
+        }
+
+        button:hover:enabled {
+            transform: translateY(-1px);
+            filter: brightness(1.08);
+        }
+
+        #continueBtn {
+            background: #4ade80;
+            color: #062014;
+        }
+
+        #continueBtn:disabled {
+            background: #334155;
+            color: #94a3b8;
+            cursor: not-allowed;
+        }
+    </style>
+</head>
+
+<body>
+    <main class="card">
+        <h1>Set up your reference</h1>
+        <p class="subtitle">Center your face in the frame and capture a clear, well-lit image.</p>
+        <p class="privacy-note">Privacy notice: your reference image and verification data are used only for this session. They are stored temporarily in this browser session and cleared when you exit the exam.</p>
+        <video id="video" autoplay muted playsinline></video>
+        <p id="status" role="status">Click “Check and capture” to allow camera access.</p>
+        <button id="captureBtn">Check and capture</button>
+        <button id="continueBtn" disabled>Continue to liveness check</button>
+    </main>
+    <canvas id="canvas" style="display: none;"></canvas>
+
+    <script>
+        let capturedImageData = null;
+        let cameraStream = null;
+        let faceModelsReady = false;
+
+        const video = document.getElementById('video');
+        const status = document.getElementById('status');
+        const captureButton = document.getElementById('captureBtn');
+        const continueButton = document.getElementById('continueBtn');
+
+        async function loadFaceModel() {
+            try {
+                await faceapi.nets.tinyFaceDetector.loadFromUri('./models');
+                faceModelsReady = true;
+            } catch (error) {
+                console.error('Face model loading failed:', error);
+                status.textContent = 'Face detection could not be loaded.';
+                captureButton.disabled = true;
+            }
+        }
+
+        captureButton.addEventListener('click', async () => {
+            captureButton.disabled = true;
+            try {
+                if (!cameraStream) {
+                    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                        throw new Error('Camera access requires HTTPS.');
+                    }
+                    status.textContent = 'Requesting camera access...';
+                    cameraStream = await navigator.mediaDevices.getUserMedia({ video: true });
+                    video.srcObject = cameraStream;
+                    await video.play();
+                }
+
+                if (!faceModelsReady) {
+                    status.textContent = 'Loading face detection...';
+                    await loadFaceModel();
+                }
+
+                if (!video.videoWidth || !video.videoHeight) {
+                    throw new Error('Camera is not ready yet.');
+                }
+
+                status.textContent = 'Checking for a single face...';
+                const detections = await faceapi.detectAllFaces(
+                    video,
+                    new faceapi.TinyFaceDetectorOptions({ inputSize: 320, scoreThreshold: 0.5 })
+                );
+                if (detections.length !== 1) {
+                    status.textContent = detections.length === 0
+                        ? 'No face detected. Center your face and try again.'
+                        : `${detections.length} persons detected. Only one person may be captured.`;
+                    continueButton.disabled = true;
+                    return;
+                }
+
+                const canvas = document.getElementById('canvas');
+                const context = canvas.getContext('2d');
+                canvas.width = video.videoWidth;
+                canvas.height = video.videoHeight;
+                context.drawImage(video, 0, 0, canvas.width, canvas.height);
+                capturedImageData = canvas.toDataURL('image/png');
+                sessionStorage.setItem('referenceImage', capturedImageData);
+                sessionStorage.setItem('referenceCaptureActive', 'true');
+                status.textContent = 'Face captured successfully. Continue when ready.';
+                continueButton.disabled = false;
+            } catch (error) {
+                console.error('Capture failed:', error);
+                status.textContent = error.message || 'Camera capture failed.';
+            } finally {
+                captureButton.disabled = false;
+            }
+        });
+
+        continueButton.addEventListener('click', () => {
+            if (!capturedImageData) {
+                status.textContent = 'Capture a valid face before continuing.';
+                return;
+            }
+            if (cameraStream) {
+                cameraStream.getTracks().forEach(track => track.stop());
+            }
+            window.location.href = 'index1.html';
+        });
+
+        window.addEventListener('beforeunload', () => {
+            if (cameraStream) {
+                cameraStream.getTracks().forEach(track => track.stop());
+            }
+        });
+
+        loadFaceModel();
+    </script>
+</body>
+
+</html>
